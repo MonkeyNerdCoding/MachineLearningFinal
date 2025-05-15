@@ -18,9 +18,21 @@ def get_stock_data(csv_file):
     """
     Đọc dữ liệu cổ phiếu từ file CSV
     """
-    df = pd.read_csv('GRAB.csv')
-    df['Date'] = pd.to_datetime(df['Date'])
-    df.set_index('Date', inplace=True)
+    df = pd.read_csv(csv_file)
+    # Chuẩn hóa tên cột: viết hoa chữ cái đầu để tương thích với code
+    df.columns = [col.capitalize() for col in df.columns]
+    # Ưu tiên nhận diện cột ngày tháng là 'Date', nếu không có thì thử 'Time'
+    date_col = None
+    if 'Date' in df.columns:
+        date_col = 'Date'
+    elif 'Time' in df.columns:
+        date_col = 'Time'
+    else:
+        print(f"File {csv_file} không có cột ngày tháng ('Date' hoặc 'Time'). Hãy kiểm tra lại định dạng file!")
+        return None
+    # Nếu dữ liệu là yyyy-mm-dd thì không cần dayfirst
+    df[date_col] = pd.to_datetime(df[date_col])
+    df.set_index(date_col, inplace=True)
     return df
 
 def prepare_data(df, sequence_length=10):
@@ -249,19 +261,17 @@ def train_and_evaluate_models(X_train, X_test, y_train, y_test):
     
     return results, mlp_history, rnn_history
 
-def plot_results(results, mlp_history, rnn_history, y_test):
+def plot_results(results, mlp_history, rnn_history, y_test, scaler=None, window=10):
     """
-    Vẽ đồ thị kết quả chi tiết
+    Vẽ đồ thị kết quả chi tiết (giá gốc, làm mượt rolling mean)
     """
     # 1. So sánh MSE giữa train và test
     plt.figure(figsize=(12, 6))
     models = list(results.keys())
     mse_train = [results[model]['MSE_train'] for model in models]
     mse_test = [results[model]['MSE_test'] for model in models]
-    
     x = np.arange(len(models))
     width = 0.35
-    
     plt.bar(x - width/2, mse_train, width, label='Train MSE')
     plt.bar(x + width/2, mse_test, width, label='Test MSE')
     plt.title('So sánh MSE giữa tập Train và Test')
@@ -270,7 +280,7 @@ def plot_results(results, mlp_history, rnn_history, y_test):
     plt.tight_layout()
     plt.savefig('model_comparison.png')
     plt.close()
-    
+
     # 2. Vẽ quá trình huấn luyện của MLP
     plt.figure(figsize=(10, 6))
     plt.plot(mlp_history.history['loss'], label='Training Loss')
@@ -281,7 +291,7 @@ def plot_results(results, mlp_history, rnn_history, y_test):
     plt.legend()
     plt.savefig('mlp_training.png')
     plt.close()
-    
+
     # 3. Vẽ quá trình huấn luyện của RNN
     plt.figure(figsize=(10, 6))
     plt.plot(rnn_history.history['loss'], label='Training Loss')
@@ -292,20 +302,43 @@ def plot_results(results, mlp_history, rnn_history, y_test):
     plt.legend()
     plt.savefig('rnn_training.png')
     plt.close()
-    
-    # 4. Vẽ dự đoán so với giá thật cho mỗi mô hình
+
+    # 4. Vẽ dự đoán so với giá thật cho mỗi mô hình (giá gốc, rolling mean)
+    try:
+        x_axis = y_test.index
+    except AttributeError:
+        x_axis = np.arange(len(y_test))
     for model_name in models:
-        plt.figure(figsize=(12, 6))
-        plt.plot(results[model_name]['y_pred_test'], label='Dự đoán')
-        plt.plot(y_test, label='Giá thật')
+        # Inverse_transform về giá gốc
+        if scaler is not None:
+            # Chuẩn bị mảng với đúng số chiều, chỉ thay đổi cột 'Close'
+            y_pred = results[model_name]['y_pred_test']
+            y_true = y_test
+            # Tạo mảng zeros, gán giá trị vào cột 'Close' (vị trí 3)
+            y_pred_full = np.zeros((len(y_pred), scaler.n_features_in_))
+            y_true_full = np.zeros((len(y_true), scaler.n_features_in_))
+            y_pred_full[:, 3] = y_pred
+            y_true_full[:, 3] = y_true
+            y_pred_inv = scaler.inverse_transform(y_pred_full)[:, 3]
+            y_true_inv = scaler.inverse_transform(y_true_full)[:, 3]
+        else:
+            y_pred_inv = results[model_name]['y_pred_test']
+            y_true_inv = y_test
+        # Làm mượt rolling mean
+        y_pred_smooth = pd.Series(y_pred_inv).rolling(window=window, min_periods=1).mean()
+        y_true_smooth = pd.Series(y_true_inv).rolling(window=window, min_periods=1).mean()
+        # Vẽ
+        plt.figure(figsize=(16, 7))
+        plt.plot(x_axis, y_pred_smooth, label='Dự đoán (giá gốc, rolling mean)')
+        plt.plot(x_axis, y_true_smooth, label='Giá thật (giá gốc, rolling mean)')
         plt.title(f'So sánh dự đoán và giá thật - {model_name}')
-        plt.xlabel('Thời gian')
+        plt.xlabel('Ngày')
         plt.ylabel('Giá')
         plt.legend()
         plt.tight_layout()
         plt.savefig(f'{model_name}_predictions.png')
         plt.close()
-    
+
     # In báo cáo chi tiết
     print("\nBáo cáo chi tiết các mô hình:")
     print("-" * 50)
@@ -322,9 +355,8 @@ def plot_results(results, mlp_history, rnn_history, y_test):
 
 def main():
     # Đọc dữ liệu từ file CSV
-    csv_file = 'VFS.csv'
+    csv_file = 'VNM.csv'
     df = get_stock_data(csv_file)
-    
     # Kiểm tra dữ liệu
     if df is None or df.empty:
         print(f"Không đọc được dữ liệu từ file {csv_file}. Hãy kiểm tra lại file!")
@@ -332,18 +364,14 @@ def main():
     if not isinstance(df.index, pd.DatetimeIndex):
         print("Index của DataFrame không phải là DatetimeIndex. Không thể xử lý dữ liệu!")
         return
-    
     # Chuẩn bị dữ liệu
     X, y, scaler = prepare_data(df)
-    
     # Chia dữ liệu
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    
     # Huấn luyện và đánh giá mô hình
     results, mlp_history, rnn_history = train_and_evaluate_models(X_train, X_test, y_train, y_test)
-    
     # Vẽ đồ thị và in kết quả
-    plot_results(results, mlp_history, rnn_history, y_test)
+    plot_results(results, mlp_history, rnn_history, y_test, scaler=scaler)
 
 if __name__ == "__main__":
     main()
