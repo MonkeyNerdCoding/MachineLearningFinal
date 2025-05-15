@@ -18,7 +18,7 @@ def get_stock_data(csv_file):
     """
     Đọc dữ liệu cổ phiếu từ file CSV
     """
-    df = pd.read_csv(csv_file)
+    df = pd.read_csv('GRAB.csv')
     df['Date'] = pd.to_datetime(df['Date'])
     df.set_index('Date', inplace=True)
     return df
@@ -110,21 +110,22 @@ def create_mlp_model(input_shape):
 
 def create_rnn_model(input_shape):
     """
-    Tạo mô hình RNN cải tiến với GRU
+    Tạo mô hình RNN cải tiến: Kết hợp LSTM và GRU, tăng số units, thêm BatchNormalization, giảm learning rate, điều chỉnh Dropout.
     """
     model = Sequential([
-        GRU(100, return_sequences=True, 
-            input_shape=input_shape,
-            kernel_regularizer=l1_l2(l1=0.01, l2=0.01)),
+        LSTM(128, return_sequences=True, input_shape=input_shape, kernel_regularizer=l1_l2(l1=0.005, l2=0.005)),
+        BatchNormalization(),
+        Dropout(0.4),
+        GRU(64, return_sequences=True, kernel_regularizer=l1_l2(l1=0.005, l2=0.005)),
         BatchNormalization(),
         Dropout(0.3),
-        GRU(50,
-            kernel_regularizer=l1_l2(l1=0.01, l2=0.01)),
+        GRU(32, kernel_regularizer=l1_l2(l1=0.005, l2=0.005)),
         BatchNormalization(),
-        Dropout(0.3),
+        Dropout(0.2),
         Dense(1)
     ])
-    model.compile(optimizer='adam', loss='mse')
+    optimizer = tf.keras.optimizers.Adam(learning_rate=0.0005)
+    model.compile(optimizer=optimizer, loss='mse')
     return model
 
 def train_and_evaluate_models(X_train, X_test, y_train, y_test):
@@ -170,10 +171,10 @@ def train_and_evaluate_models(X_train, X_test, y_train, y_test):
     
     # Decision Tree với GridSearch
     dt_params = {
-        'max_depth': [3, 5, 7, 10],
-        'min_samples_split': [2, 5, 10],
-        'min_samples_leaf': [1, 2, 4],
-        'max_features': ['sqrt', 'log2']
+        'max_depth': [2, 3, 4, 5, 6, 7],
+        'min_samples_split': [5, 10, 20],
+        'min_samples_leaf': [2, 4, 8],
+        'max_features': [None, 'sqrt']
     }
     dt_model = DecisionTreeRegressor(random_state=42)
     dt_grid = GridSearchCV(dt_model, dt_params, cv=5, scoring='neg_mean_squared_error')
@@ -188,14 +189,14 @@ def train_and_evaluate_models(X_train, X_test, y_train, y_test):
     lasso_model = lasso_grid.best_estimator_
     
     # Ridge với GridSearch
-    ridge_params = {'alpha': [0.001, 0.01, 0.1, 1.0, 10.0]}
+    ridge_params = {'alpha': [1, 10, 50, 100, 200, 500, 1000, 2000]}
     ridge_model = Ridge()
     ridge_grid = GridSearchCV(ridge_model, ridge_params, cv=5, scoring='neg_mean_squared_error')
     ridge_grid.fit(X_train_reshaped, y_train)
     ridge_model = ridge_grid.best_estimator_
     
     # kNN với GridSearch
-    knn_params = {'n_neighbors': [3, 5, 7, 10]}
+    knn_params = {'n_neighbors': [5, 7, 10, 15, 20, 30, 50]}
     knn_model = KNeighborsRegressor()
     knn_grid = GridSearchCV(knn_model, knn_params, cv=5, scoring='neg_mean_squared_error')
     knn_grid.fit(X_train_reshaped, y_train)
