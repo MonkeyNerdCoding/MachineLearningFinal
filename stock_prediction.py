@@ -1,0 +1,348 @@
+import numpy as np # type: ignore
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.metrics import mean_squared_error, r2_score
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, LSTM, GRU, Dropout, BatchNormalization
+from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.regularizers import l1_l2
+from sklearn.linear_model import Ridge, Lasso
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.neighbors import KNeighborsRegressor
+
+def get_stock_data(csv_file):
+    """
+    Đọc dữ liệu cổ phiếu từ file CSV
+    """
+    df = pd.read_csv(csv_file)
+    df['Date'] = pd.to_datetime(df['Date'])
+    df.set_index('Date', inplace=True)
+    return df
+
+def prepare_data(df, sequence_length=10):
+    """
+    Chuẩn bị dữ liệu cho mô hình với các đặc trưng mới
+    """
+    df = df.copy()
+    
+    # Các đặc trưng kỹ thuật
+    df['Returns'] = df['Close'].pct_change()
+    df['MA5'] = df['Close'].rolling(window=5).mean()
+    df['MA20'] = df['Close'].rolling(window=20).mean()
+    df['MA50'] = df['Close'].rolling(window=50).mean()
+    df['Volume_Change'] = df['Volume'].pct_change()
+    
+    # Thêm các đặc trưng kỹ thuật mới
+    df['RSI'] = calculate_rsi(df['Close'])
+    df['MACD'] = calculate_macd(df['Close'])
+    df['Bollinger_Bands'] = calculate_bollinger_bands(df['Close'])
+    
+    # Đặc trưng thời gian
+    df['Day_of_Week'] = df.index.dayofweek
+    df['Month'] = df.index.month
+    df['Year'] = df.index.year
+    df['Quarter'] = df.index.quarter
+    
+    # Xóa các dòng có giá trị NaN
+    df = df.dropna()
+    
+    # Chuẩn hóa dữ liệu
+    scaler = MinMaxScaler()
+    features = ['Open', 'High', 'Low', 'Close', 'Volume', 'Returns', 
+                'MA5', 'MA20', 'MA50', 'Volume_Change', 'RSI', 'MACD', 
+                'Bollinger_Bands']
+    df[features] = scaler.fit_transform(df[features])
+    
+    # Tạo sequences cho RNN
+    X, y = [], []
+    for i in range(len(df) - sequence_length):
+        X.append(df[features].iloc[i:(i + sequence_length)].values)
+        y.append(df['Close'].iloc[i + sequence_length])
+    
+    return np.array(X), np.array(y), scaler
+
+def calculate_rsi(prices, period=14):
+    """Tính chỉ số RSI"""
+    delta = prices.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
+def calculate_macd(prices, fast=12, slow=26):
+    """Tính chỉ số MACD"""
+    exp1 = prices.ewm(span=fast, adjust=False).mean()
+    exp2 = prices.ewm(span=slow, adjust=False).mean()
+    return exp1 - exp2
+
+def calculate_bollinger_bands(prices, window=20):
+    """Tính Bollinger Bands"""
+    ma = prices.rolling(window=window).mean()
+    std = prices.rolling(window=window).std()
+    return (prices - ma) / (2 * std)
+
+def create_mlp_model(input_shape):
+    """
+    Tạo mô hình MLP cải tiến
+    """
+    model = Sequential([
+        Dense(128, activation='relu', 
+              input_shape=input_shape,
+              kernel_regularizer=l1_l2(l1=0.01, l2=0.01)),
+        BatchNormalization(),
+        Dropout(0.3),
+        Dense(64, activation='relu',
+              kernel_regularizer=l1_l2(l1=0.01, l2=0.01)),
+        BatchNormalization(),
+        Dropout(0.3),
+        Dense(32, activation='relu',
+              kernel_regularizer=l1_l2(l1=0.01, l2=0.01)),
+        BatchNormalization(),
+        Dropout(0.3),
+        Dense(1)
+    ])
+    model.compile(optimizer='adam', loss='mse')
+    return model
+
+def create_rnn_model(input_shape):
+    """
+    Tạo mô hình RNN cải tiến với GRU
+    """
+    model = Sequential([
+        GRU(100, return_sequences=True, 
+            input_shape=input_shape,
+            kernel_regularizer=l1_l2(l1=0.01, l2=0.01)),
+        BatchNormalization(),
+        Dropout(0.3),
+        GRU(50,
+            kernel_regularizer=l1_l2(l1=0.01, l2=0.01)),
+        BatchNormalization(),
+        Dropout(0.3),
+        Dense(1)
+    ])
+    model.compile(optimizer='adam', loss='mse')
+    return model
+
+def train_and_evaluate_models(X_train, X_test, y_train, y_test):
+    """
+    Huấn luyện và đánh giá các mô hình với tối ưu hóa
+    """
+    # Chia validation set
+    X_train, X_val, y_train, y_val = train_test_split(
+        X_train, y_train, test_size=0.2, random_state=42
+    )
+    
+    # Reshape dữ liệu
+    X_train_reshaped = X_train.reshape(X_train.shape[0], -1)
+    X_val_reshaped = X_val.reshape(X_val.shape[0], -1)
+    X_test_reshaped = X_test.reshape(X_test.shape[0], -1)
+    
+    # MLP
+    mlp_model = create_mlp_model((X_train.shape[1], X_train.shape[2]))
+    early_stopping = EarlyStopping(
+        monitor='val_loss',
+        patience=20,
+        restore_best_weights=True
+    )
+    mlp_history = mlp_model.fit(
+        X_train, y_train,
+        epochs=300,
+        batch_size=32,
+        validation_data=(X_val, y_val),
+        callbacks=[early_stopping],
+        verbose=0
+    )
+    
+    # RNN
+    rnn_model = create_rnn_model((X_train.shape[1], X_train.shape[2]))
+    rnn_history = rnn_model.fit(
+        X_train, y_train,
+        epochs=300,
+        batch_size=32,
+        validation_data=(X_val, y_val),
+        callbacks=[early_stopping],
+        verbose=0
+    )
+    
+    # Decision Tree với GridSearch
+    dt_params = {
+        'max_depth': [3, 5, 7, 10],
+        'min_samples_split': [2, 5, 10],
+        'min_samples_leaf': [1, 2, 4],
+        'max_features': ['sqrt', 'log2']
+    }
+    dt_model = DecisionTreeRegressor(random_state=42)
+    dt_grid = GridSearchCV(dt_model, dt_params, cv=5, scoring='neg_mean_squared_error')
+    dt_grid.fit(X_train_reshaped, y_train)
+    dt_model = dt_grid.best_estimator_
+    
+    # Lasso với GridSearch
+    lasso_params = {'alpha': [0.001, 0.01, 0.1, 1.0]}
+    lasso_model = Lasso()
+    lasso_grid = GridSearchCV(lasso_model, lasso_params, cv=5, scoring='neg_mean_squared_error')
+    lasso_grid.fit(X_train_reshaped, y_train)
+    lasso_model = lasso_grid.best_estimator_
+    
+    # Ridge với GridSearch
+    ridge_params = {'alpha': [0.001, 0.01, 0.1, 1.0, 10.0]}
+    ridge_model = Ridge()
+    ridge_grid = GridSearchCV(ridge_model, ridge_params, cv=5, scoring='neg_mean_squared_error')
+    ridge_grid.fit(X_train_reshaped, y_train)
+    ridge_model = ridge_grid.best_estimator_
+    
+    # kNN với GridSearch
+    knn_params = {'n_neighbors': [3, 5, 7, 10]}
+    knn_model = KNeighborsRegressor()
+    knn_grid = GridSearchCV(knn_model, knn_params, cv=5, scoring='neg_mean_squared_error')
+    knn_grid.fit(X_train_reshaped, y_train)
+    knn_model = knn_grid.best_estimator_
+    
+    # Đánh giá các mô hình
+    models = {
+        'MLP': (mlp_model, X_test, X_train),
+        'RNN': (rnn_model, X_test, X_train),
+        'Decision Tree': (dt_model, X_test_reshaped, X_train_reshaped),
+        'Lasso': (lasso_model, X_test_reshaped, X_train_reshaped),
+        'Ridge': (ridge_model, X_test_reshaped, X_train_reshaped),
+        'kNN': (knn_model, X_test_reshaped, X_train_reshaped)
+    }
+    
+    # In thông tin về tham số tối ưu của Decision Tree
+    print("\nThông tin về Decision Tree:")
+    print(f"Tham số tối ưu: {dt_grid.best_params_}")
+    print(f"Điểm cross-validation tốt nhất: {-dt_grid.best_score_:.4f}")
+    
+    results = {}
+    for name, (model, X_test_data, X_train_data) in models.items():
+        # Dự đoán
+        if name in ['MLP', 'RNN']:
+            y_pred_train = model.predict(X_train_data).reshape(-1)
+            y_pred_test = model.predict(X_test_data).reshape(-1)
+        else:
+            y_pred_train = model.predict(X_train_data)
+            y_pred_test = model.predict(X_test_data)
+        
+        # Đảm bảo kích thước
+        y_pred_test = y_pred_test[:len(y_test)]
+        y_pred_train = y_pred_train[:len(y_train)]
+        
+        # Tính metrics
+        mse_train = mean_squared_error(y_train, y_pred_train)
+        mse_test = mean_squared_error(y_test, y_pred_test)
+        r2_train = r2_score(y_train, y_pred_train)
+        r2_test = r2_score(y_test, y_pred_test)
+        
+        results[name] = {
+            'MSE_train': mse_train,
+            'MSE_test': mse_test,
+            'R2_train': r2_train,
+            'R2_test': r2_test,
+            'Overfitting_Score': mse_test / mse_train,
+            'y_pred_test': y_pred_test,
+            'y_pred_train': y_pred_train
+        }
+    
+    return results, mlp_history, rnn_history
+
+def plot_results(results, mlp_history, rnn_history, y_test):
+    """
+    Vẽ đồ thị kết quả chi tiết
+    """
+    # 1. So sánh MSE giữa train và test
+    plt.figure(figsize=(12, 6))
+    models = list(results.keys())
+    mse_train = [results[model]['MSE_train'] for model in models]
+    mse_test = [results[model]['MSE_test'] for model in models]
+    
+    x = np.arange(len(models))
+    width = 0.35
+    
+    plt.bar(x - width/2, mse_train, width, label='Train MSE')
+    plt.bar(x + width/2, mse_test, width, label='Test MSE')
+    plt.title('So sánh MSE giữa tập Train và Test')
+    plt.xticks(x, models, rotation=45)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig('model_comparison.png')
+    plt.close()
+    
+    # 2. Vẽ quá trình huấn luyện của MLP
+    plt.figure(figsize=(10, 6))
+    plt.plot(mlp_history.history['loss'], label='Training Loss')
+    plt.plot(mlp_history.history['val_loss'], label='Validation Loss')
+    plt.title('MLP Training Process')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.savefig('mlp_training.png')
+    plt.close()
+    
+    # 3. Vẽ quá trình huấn luyện của RNN
+    plt.figure(figsize=(10, 6))
+    plt.plot(rnn_history.history['loss'], label='Training Loss')
+    plt.plot(rnn_history.history['val_loss'], label='Validation Loss')
+    plt.title('RNN Training Process')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.savefig('rnn_training.png')
+    plt.close()
+    
+    # 4. Vẽ dự đoán so với giá thật cho mỗi mô hình
+    for model_name in models:
+        plt.figure(figsize=(12, 6))
+        plt.plot(results[model_name]['y_pred_test'], label='Dự đoán')
+        plt.plot(y_test, label='Giá thật')
+        plt.title(f'So sánh dự đoán và giá thật - {model_name}')
+        plt.xlabel('Thời gian')
+        plt.ylabel('Giá')
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(f'{model_name}_predictions.png')
+        plt.close()
+    
+    # In báo cáo chi tiết
+    print("\nBáo cáo chi tiết các mô hình:")
+    print("-" * 50)
+    for model, metrics in results.items():
+        print(f"\n{model}:")
+        print(f"MSE Train: {metrics['MSE_train']:.4f}")
+        print(f"MSE Test: {metrics['MSE_test']:.4f}")
+        print(f"R2 Train: {metrics['R2_train']:.4f}")
+        print(f"R2 Test: {metrics['R2_test']:.4f}")
+        print(f"Chỉ số Overfitting (MSE_test/MSE_train): {metrics['Overfitting_Score']:.4f}")
+        if metrics['Overfitting_Score'] > 1.5:
+            print("Cảnh báo: Có dấu hiệu overfitting!")
+        print("-" * 30)
+
+def main():
+    # Đọc dữ liệu từ file CSV
+    csv_file = 'VFS.csv'
+    df = get_stock_data(csv_file)
+    
+    # Kiểm tra dữ liệu
+    if df is None or df.empty:
+        print(f"Không đọc được dữ liệu từ file {csv_file}. Hãy kiểm tra lại file!")
+        return
+    if not isinstance(df.index, pd.DatetimeIndex):
+        print("Index của DataFrame không phải là DatetimeIndex. Không thể xử lý dữ liệu!")
+        return
+    
+    # Chuẩn bị dữ liệu
+    X, y, scaler = prepare_data(df)
+    
+    # Chia dữ liệu
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    
+    # Huấn luyện và đánh giá mô hình
+    results, mlp_history, rnn_history = train_and_evaluate_models(X_train, X_test, y_train, y_test)
+    
+    # Vẽ đồ thị và in kết quả
+    plot_results(results, mlp_history, rnn_history, y_test)
+
+if __name__ == "__main__":
+    main()
