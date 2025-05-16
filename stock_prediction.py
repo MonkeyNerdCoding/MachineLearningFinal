@@ -7,7 +7,7 @@ from sklearn.model_selection import train_test_split, GridSearchCV, learning_cur
 from sklearn.metrics import mean_squared_error, r2_score
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, LSTM, GRU, Dropout, BatchNormalization, Input
+from tensorflow.keras.layers import Dense, LSTM, GRU, Dropout, BatchNormalization, Input, LeakyReLU, Bidirectional, LayerNormalization
 from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.regularizers import l1_l2
 from sklearn.linear_model import Ridge, Lasso, LinearRegression
@@ -112,45 +112,51 @@ def calculate_bollinger_bands(prices, window=20):
 
 def create_mlp_model(input_shape):
     """
-    Tạo mô hình MLP cải tiến
+    Tạo mô hình MLP cải tiến hơn: nhiều layer hơn, units lớn hơn, thêm BatchNormalization, Dropout, LeakyReLU
     """
-    model = Sequential([
-        Input(shape=input_shape),
-        Dense(128, activation='relu', 
-              kernel_regularizer=l1_l2(l1=0.01, l2=0.01)),
-        BatchNormalization(),
-        Dropout(0.3),
-        Dense(64, activation='relu',
-              kernel_regularizer=l1_l2(l1=0.01, l2=0.01)),
-        BatchNormalization(),
-        Dropout(0.3),
-        Dense(32, activation='relu',
-              kernel_regularizer=l1_l2(l1=0.01, l2=0.01)),
-        BatchNormalization(),
-        Dropout(0.3),
-        Dense(1)
-    ])
-    model.compile(optimizer='adam', loss='mse')
+    model = Sequential()
+    model.add(Input(shape=input_shape))
+    model.add(Dense(256))
+    model.add(LeakyReLU(alpha=0.1))
+    model.add(BatchNormalization())
+    model.add(Dropout(0.4))
+    model.add(Dense(128))
+    model.add(LeakyReLU(alpha=0.1))
+    model.add(BatchNormalization())
+    model.add(Dropout(0.3))
+    model.add(Dense(64))
+    model.add(LeakyReLU(alpha=0.1))
+    model.add(BatchNormalization())
+    model.add(Dropout(0.2))
+    model.add(Dense(32))
+    model.add(LeakyReLU(alpha=0.1))
+    model.add(BatchNormalization())
+    model.add(Dropout(0.1))
+    model.add(Dense(1))
+    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.0005), loss='mse')
     return model
 
 def create_rnn_model(input_shape):
     """
-    Tạo mô hình RNN cải tiến: Kết hợp LSTM và GRU, tăng số units, thêm BatchNormalization, giảm learning rate, điều chỉnh Dropout.
+    Tạo mô hình RNN cải tiến sâu hơn: Nhiều lớp Bidirectional LSTM và GRU, thêm LayerNormalization, Dropout lớn hơn, thử Attention nếu có, learning rate scheduler.
     """
-    model = Sequential([
-        Input(shape=input_shape),
-        LSTM(128, return_sequences=True, kernel_regularizer=l1_l2(l1=0.005, l2=0.005)),
-        BatchNormalization(),
-        Dropout(0.4),
-        GRU(64, return_sequences=True, kernel_regularizer=l1_l2(l1=0.005, l2=0.005)),
-        BatchNormalization(),
-        Dropout(0.3),
-        GRU(32, kernel_regularizer=l1_l2(l1=0.005, l2=0.005)),
-        BatchNormalization(),
-        Dropout(0.2),
-        Dense(1)
-    ])
-    optimizer = tf.keras.optimizers.Adam(learning_rate=0.0005)
+    model = Sequential()
+    model.add(Input(shape=input_shape))
+    model.add(Bidirectional(LSTM(128, return_sequences=True, kernel_regularizer=l1_l2(l1=0.002, l2=0.002))))
+    model.add(LayerNormalization())
+    model.add(Dropout(0.5))
+    model.add(Bidirectional(LSTM(64, return_sequences=True, kernel_regularizer=l1_l2(l1=0.002, l2=0.002))))
+    model.add(LayerNormalization())
+    model.add(Dropout(0.4))
+    model.add(Bidirectional(GRU(32, return_sequences=True, kernel_regularizer=l1_l2(l1=0.002, l2=0.002))))
+    model.add(LayerNormalization())
+    model.add(Dropout(0.3))
+    model.add(GRU(16, return_sequences=False, kernel_regularizer=l1_l2(l1=0.002, l2=0.002)))
+    model.add(LayerNormalization())
+    model.add(Dropout(0.2))
+    model.add(Dense(16, activation='relu'))
+    model.add(Dense(1))
+    optimizer = tf.keras.optimizers.Adam(learning_rate=0.0002)
     model.compile(optimizer=optimizer, loss='mse')
     return model
 
@@ -399,14 +405,43 @@ def plot_results(results, mlp_history, rnn_history, y_test, X_train_reshaped, y_
     # 4. Vẽ dự đoán so với giá thật cho mỗi mô hình
     for model_name in models:
         plt.figure(figsize=(12, 6))
-        plt.plot(results[model_name]['y_pred_test'], label='Dự đoán')
-        plt.plot(y_test, label='Giá thật')
+        # Làm mượt dữ liệu bằng rolling mean
+        y_pred_smooth = pd.Series(results[model_name]['y_pred_test']).rolling(window=10, min_periods=1).mean()
+        y_test_smooth = pd.Series(y_test).rolling(window=10, min_periods=1).mean()
+        plt.plot(y_pred_smooth, label='Dự đoán')
+        plt.plot(y_test_smooth, label='Giá thật')
         plt.title(f'So sánh dự đoán và giá thật - {model_name}')
         plt.xlabel('Thời gian')
-        plt.ylabel('Giá')
+        plt.ylabel('Giá gốc')
         plt.legend()
         plt.tight_layout()
         plt.savefig(f'{model_name}_predictions.png')
+        plt.close()
+
+        # 4.1. Vẽ sai số tuyệt đối (absolute error)
+        abs_error = np.abs(results[model_name]['y_pred_test'] - y_test)
+        plt.figure(figsize=(12, 4))
+        plt.plot(abs_error, color='red', label='Sai số tuyệt đối')
+        plt.title(f'Sai số tuyệt đối |dự đoán - giá thật| - {model_name}')
+        plt.xlabel('Thời gian')
+        plt.ylabel('Sai số tuyệt đối')
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(f'{model_name}_absolute_error.png')
+        plt.close()
+        
+        # 4.3. Scatter plot dự đoán vs giá thật
+        plt.figure(figsize=(6, 6))
+        plt.scatter(results[model_name]['y_pred_test'], y_test, alpha=0.5, s=10, label='Dự đoán vs Giá thật')
+        min_val = min(np.min(results[model_name]['y_pred_test']), np.min(y_test))
+        max_val = max(np.max(results[model_name]['y_pred_test']), np.max(y_test))
+        plt.plot([min_val, max_val], [min_val, max_val], 'k--', lw=2, label='Đường chéo')
+        plt.xlabel('Giá dự đoán')
+        plt.ylabel('Giá thật')
+        plt.title(f'Scatter plot: Dự đoán vs Giá thật - {model_name}')
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(f'{model_name}_scatter.png')
         plt.close()
     
     # In báo cáo chi tiết
