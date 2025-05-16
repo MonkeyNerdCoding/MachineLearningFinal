@@ -3,7 +3,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.model_selection import train_test_split, GridSearchCV, learning_curve
 from sklearn.metrics import mean_squared_error, r2_score
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
@@ -259,28 +259,68 @@ def train_and_evaluate_models(X_train, X_test, y_train, y_test):
             'y_pred_train': y_pred_train
         }
     
-    return results, mlp_history, rnn_history
+    return results, mlp_history, rnn_history, X_train_reshaped, y_train
 
-def plot_results(results, mlp_history, rnn_history, y_test, scaler=None, window=10):
+def plot_results(results, mlp_history, rnn_history, y_test, X_train_reshaped, y_train):
     """
-    Vẽ đồ thị kết quả chi tiết (giá gốc, làm mượt rolling mean)
+    Vẽ đồ thị kết quả chi tiết
     """
     # 1. So sánh MSE giữa train và test
     plt.figure(figsize=(12, 6))
     models = list(results.keys())
     mse_train = [results[model]['MSE_train'] for model in models]
     mse_test = [results[model]['MSE_test'] for model in models]
+    
     x = np.arange(len(models))
     width = 0.35
+    
     plt.bar(x - width/2, mse_train, width, label='Train MSE')
     plt.bar(x + width/2, mse_test, width, label='Test MSE')
     plt.title('So sánh MSE giữa tập Train và Test')
     plt.xticks(x, models, rotation=45)
     plt.legend()
+    plt.yscale('log')
+    plt.ylabel('MSE (Mean Squared Error)')
     plt.tight_layout()
+    # Hiển thị giá trị trên cột với định dạng thập phân đầy đủ
+    for i, v in enumerate(mse_train):
+        plt.text(x[i] - width/2, v, f'{v:.6f}', ha='center', va='bottom', fontsize=8)
+    for i, v in enumerate(mse_test):
+        plt.text(x[i] + width/2, v, f'{v:.6f}', ha='center', va='bottom', fontsize=8)
     plt.savefig('model_comparison.png')
     plt.close()
 
+    # 1.1. Vẽ sơ đồ so sánh R^2 giữa train và test
+    r2_train = [results[model]['R2_train'] for model in models]
+    r2_test = [results[model]['R2_test'] for model in models]
+    plt.figure(figsize=(12, 6))
+    plt.bar(x - width/2, r2_train, width, label='Train R²')
+    plt.bar(x + width/2, r2_test, width, label='Test R²')
+    plt.title('So sánh R² giữa tập Train và Test')
+    plt.xticks(x, models, rotation=45)
+    plt.legend()
+    plt.ylabel('R² (Hệ số xác định)')
+    plt.tight_layout()
+    for i, v in enumerate(r2_train):
+        plt.text(x[i] - width/2, v, f'{v:.6f}', ha='center', va='bottom', fontsize=8)
+    for i, v in enumerate(r2_test):
+        plt.text(x[i] + width/2, v, f'{v:.6f}', ha='center', va='bottom', fontsize=8)
+    plt.savefig('model_comparison_r2.png')
+    plt.close()
+
+    # 1.2. Vẽ sơ đồ so sánh chỉ số overfitting (MSE_test / MSE_train)
+    overfitting_scores = [results[model]['Overfitting_Score'] for model in models]
+    plt.figure(figsize=(12, 6))
+    plt.bar(x, overfitting_scores, width=0.5, color='orange', label='Overfitting Score')
+    plt.title('So sánh chỉ số Overfitting (MSE_test / MSE_train)')
+    plt.xticks(x, models, rotation=45)
+    plt.ylabel('Chỉ số Overfitting')
+    plt.tight_layout()
+    for i, v in enumerate(overfitting_scores):
+        plt.text(x[i], v, f'{v:.6f}', ha='center', va='bottom', fontsize=8)
+    plt.savefig('model_comparison_overfitting.png')
+    plt.close()
+    
     # 2. Vẽ quá trình huấn luyện của MLP
     plt.figure(figsize=(10, 6))
     plt.plot(mlp_history.history['loss'], label='Training Loss')
@@ -291,7 +331,7 @@ def plot_results(results, mlp_history, rnn_history, y_test, scaler=None, window=
     plt.legend()
     plt.savefig('mlp_training.png')
     plt.close()
-
+    
     # 3. Vẽ quá trình huấn luyện của RNN
     plt.figure(figsize=(10, 6))
     plt.plot(rnn_history.history['loss'], label='Training Loss')
@@ -303,42 +343,59 @@ def plot_results(results, mlp_history, rnn_history, y_test, scaler=None, window=
     plt.savefig('rnn_training.png')
     plt.close()
 
-    # 4. Vẽ dự đoán so với giá thật cho mỗi mô hình (giá gốc, rolling mean)
-    try:
-        x_axis = y_test.index
-    except AttributeError:
-        x_axis = np.arange(len(y_test))
+    # 3.1. Vẽ learning curve cho các thuật toán truyền thống
+    traditional_models = ['Decision Tree', 'Lasso', 'Ridge', 'kNN']
+    for model_name in traditional_models:
+        if model_name not in results:
+            continue
+        # Lấy lại mô hình với tham số tối ưu nếu có
+        model = None
+        if model_name == 'Decision Tree':
+            model = DecisionTreeRegressor()
+        elif model_name == 'Lasso':
+            model = Lasso()
+        elif model_name == 'Ridge':
+            model = Ridge()
+        elif model_name == 'kNN':
+            model = KNeighborsRegressor()
+        if model is None:
+            continue
+        train_sizes, train_scores, test_scores = learning_curve(
+            model, X_train_reshaped, y_train, cv=5, scoring='neg_mean_squared_error',
+            train_sizes=np.linspace(0.1, 1.0, 5), shuffle=True, random_state=42
+        )
+        train_scores_mean = -np.mean(train_scores, axis=1)
+        train_scores_std = np.std(train_scores, axis=1)
+        test_scores_mean = -np.mean(test_scores, axis=1)
+        test_scores_std = np.std(test_scores, axis=1)
+        plt.figure(figsize=(10, 6))
+        plt.plot(train_sizes, train_scores_mean, 'o-', color='r', label='Train MSE')
+        plt.plot(train_sizes, test_scores_mean, 'o-', color='g', label='Validation MSE')
+        plt.fill_between(train_sizes, train_scores_mean - train_scores_std,
+                         train_scores_mean + train_scores_std, alpha=0.2, color='r')
+        plt.fill_between(train_sizes, test_scores_mean - test_scores_std,
+                         test_scores_mean + test_scores_std, alpha=0.2, color='g')
+        plt.title(f'Learning Curve - {model_name}')
+        plt.xlabel('Số lượng mẫu huấn luyện')
+        plt.ylabel('MSE')
+        plt.legend(loc='best')
+        plt.tight_layout()
+        plt.savefig(f'{model_name}_learning_curve.png')
+        plt.close()
+    
+    # 4. Vẽ dự đoán so với giá thật cho mỗi mô hình
     for model_name in models:
-        # Inverse_transform về giá gốc
-        if scaler is not None:
-            # Chuẩn bị mảng với đúng số chiều, chỉ thay đổi cột 'Close'
-            y_pred = results[model_name]['y_pred_test']
-            y_true = y_test
-            # Tạo mảng zeros, gán giá trị vào cột 'Close' (vị trí 3)
-            y_pred_full = np.zeros((len(y_pred), scaler.n_features_in_))
-            y_true_full = np.zeros((len(y_true), scaler.n_features_in_))
-            y_pred_full[:, 3] = y_pred
-            y_true_full[:, 3] = y_true
-            y_pred_inv = scaler.inverse_transform(y_pred_full)[:, 3]
-            y_true_inv = scaler.inverse_transform(y_true_full)[:, 3]
-        else:
-            y_pred_inv = results[model_name]['y_pred_test']
-            y_true_inv = y_test
-        # Làm mượt rolling mean
-        y_pred_smooth = pd.Series(y_pred_inv).rolling(window=window, min_periods=1).mean()
-        y_true_smooth = pd.Series(y_true_inv).rolling(window=window, min_periods=1).mean()
-        # Vẽ
-        plt.figure(figsize=(16, 7))
-        plt.plot(x_axis, y_pred_smooth, label='Dự đoán (giá gốc, rolling mean)')
-        plt.plot(x_axis, y_true_smooth, label='Giá thật (giá gốc, rolling mean)')
+        plt.figure(figsize=(12, 6))
+        plt.plot(results[model_name]['y_pred_test'], label='Dự đoán')
+        plt.plot(y_test, label='Giá thật')
         plt.title(f'So sánh dự đoán và giá thật - {model_name}')
-        plt.xlabel('Ngày')
+        plt.xlabel('Thời gian')
         plt.ylabel('Giá')
         plt.legend()
         plt.tight_layout()
         plt.savefig(f'{model_name}_predictions.png')
         plt.close()
-
+    
     # In báo cáo chi tiết
     print("\nBáo cáo chi tiết các mô hình:")
     print("-" * 50)
@@ -369,9 +426,9 @@ def main():
     # Chia dữ liệu
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     # Huấn luyện và đánh giá mô hình
-    results, mlp_history, rnn_history = train_and_evaluate_models(X_train, X_test, y_train, y_test)
+    results, mlp_history, rnn_history, X_train_reshaped, y_train = train_and_evaluate_models(X_train, X_test, y_train, y_test)
     # Vẽ đồ thị và in kết quả
-    plot_results(results, mlp_history, rnn_history, y_test, scaler=scaler)
+    plot_results(results, mlp_history, rnn_history, y_test, X_train_reshaped, y_train)
 
 if __name__ == "__main__":
     main()
