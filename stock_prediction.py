@@ -13,6 +13,7 @@ from tensorflow.keras.regularizers import l1_l2
 from sklearn.linear_model import Ridge, Lasso, LinearRegression
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.neighbors import KNeighborsRegressor
+import os
 
 def get_stock_data(csv_file):
     """
@@ -290,15 +291,21 @@ def plot_results(results, mlp_history, rnn_history, y_test, X_train_reshaped, y_
     """
     Vẽ đồ thị kết quả chi tiết
     """
+    # Đảm bảo các thư mục lưu hình tồn tại
+    os.makedirs('comparition_MSE', exist_ok=True)
+    os.makedirs('comparision_r^2', exist_ok=True)
+    os.makedirs('training_processing', exist_ok=True)
+    os.makedirs('learning_curve', exist_ok=True)
+    os.makedirs('comparedtotherealprice', exist_ok=True)
+    os.makedirs('absolute_Error', exist_ok=True)
+    os.makedirs('Scatter_plot', exist_ok=True)
     # 1. So sánh MSE giữa train và test
     plt.figure(figsize=(12, 6))
     models = list(results.keys())
     mse_train = [results[model]['MSE_train'] for model in models]
     mse_test = [results[model]['MSE_test'] for model in models]
-    
     x = np.arange(len(models))
     width = 0.35
-    
     plt.bar(x - width/2, mse_train, width, label='Train MSE')
     plt.bar(x + width/2, mse_test, width, label='Test MSE')
     plt.title('So sánh MSE giữa tập Train và Test')
@@ -307,12 +314,11 @@ def plot_results(results, mlp_history, rnn_history, y_test, X_train_reshaped, y_
     plt.yscale('log')
     plt.ylabel('MSE (Mean Squared Error)')
     plt.tight_layout()
-    # Hiển thị giá trị trên cột với định dạng thập phân đầy đủ
     for i, v in enumerate(mse_train):
         plt.text(x[i] - width/2, v, f'{v:.6f}', ha='center', va='bottom', fontsize=8)
     for i, v in enumerate(mse_test):
         plt.text(x[i] + width/2, v, f'{v:.6f}', ha='center', va='bottom', fontsize=8)
-    plt.savefig('model_comparison.png')
+    plt.savefig(os.path.join('comparition_MSE', 'model_comparison.png'))
     plt.close()
 
     # 1.1. Vẽ sơ đồ so sánh R^2 giữa train và test
@@ -330,7 +336,7 @@ def plot_results(results, mlp_history, rnn_history, y_test, X_train_reshaped, y_
         plt.text(x[i] - width/2, v, f'{v:.6f}', ha='center', va='bottom', fontsize=8)
     for i, v in enumerate(r2_test):
         plt.text(x[i] + width/2, v, f'{v:.6f}', ha='center', va='bottom', fontsize=8)
-    plt.savefig('model_comparison_r2.png')
+    plt.savefig(os.path.join('comparision_r^2', 'model_comparison_r2.png'))
     plt.close()
 
     # 1.2. Vẽ sơ đồ so sánh chỉ số overfitting (MSE_test / MSE_train)
@@ -343,7 +349,7 @@ def plot_results(results, mlp_history, rnn_history, y_test, X_train_reshaped, y_
     plt.tight_layout()
     for i, v in enumerate(overfitting_scores):
         plt.text(x[i], v, f'{v:.6f}', ha='center', va='bottom', fontsize=8)
-    plt.savefig('model_comparison_overfitting.png')
+    plt.savefig(os.path.join('comparition_MSE', 'model_comparison_overfitting.png'))
     plt.close()
     
     # 2. Vẽ quá trình huấn luyện của MLP
@@ -354,7 +360,7 @@ def plot_results(results, mlp_history, rnn_history, y_test, X_train_reshaped, y_
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
     plt.legend()
-    plt.savefig('mlp_training.png')
+    plt.savefig(os.path.join('training_processing', 'mlp_training.png'))
     plt.close()
     
     # 3. Vẽ quá trình huấn luyện của RNN
@@ -365,7 +371,7 @@ def plot_results(results, mlp_history, rnn_history, y_test, X_train_reshaped, y_
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
     plt.legend()
-    plt.savefig('rnn_training.png')
+    plt.savefig(os.path.join('training_processing', 'rnn_training.png'))
     plt.close()
 
     # 3.1. Vẽ learning curve cho các thuật toán truyền thống
@@ -373,7 +379,6 @@ def plot_results(results, mlp_history, rnn_history, y_test, X_train_reshaped, y_
     for model_name in traditional_models:
         if model_name not in results:
             continue
-        # Sử dụng lại mô hình đã huấn luyện nếu truyền vào
         model = None
         if trained_models and model_name in trained_models:
             model = trained_models[model_name]
@@ -399,13 +404,12 @@ def plot_results(results, mlp_history, rnn_history, y_test, X_train_reshaped, y_
         plt.ylabel('MSE')
         plt.legend(loc='best')
         plt.tight_layout()
-        plt.savefig(f'{model_name}_learning_curve.png')
+        plt.savefig(os.path.join('learning_curve', f'{model_name}_learning_curve.png'))
         plt.close()
     
     # 4. Vẽ dự đoán so với giá thật cho mỗi mô hình
     for model_name in models:
         plt.figure(figsize=(12, 6))
-        # Làm mượt dữ liệu bằng rolling mean
         y_pred_smooth = pd.Series(results[model_name]['y_pred_test']).rolling(window=10, min_periods=1).mean()
         y_test_smooth = pd.Series(y_test).rolling(window=10, min_periods=1).mean()
         plt.plot(y_pred_smooth, label='Dự đoán')
@@ -415,7 +419,7 @@ def plot_results(results, mlp_history, rnn_history, y_test, X_train_reshaped, y_
         plt.ylabel('Giá gốc')
         plt.legend()
         plt.tight_layout()
-        plt.savefig(f'{model_name}_predictions.png')
+        plt.savefig(os.path.join('comparedtotherealprice', f'{model_name}_predictions.png'))
         plt.close()
 
         # 4.1. Vẽ sai số tuyệt đối (absolute error)
@@ -427,7 +431,7 @@ def plot_results(results, mlp_history, rnn_history, y_test, X_train_reshaped, y_
         plt.ylabel('Sai số tuyệt đối')
         plt.legend()
         plt.tight_layout()
-        plt.savefig(f'{model_name}_absolute_error.png')
+        plt.savefig(os.path.join('absolute_Error', f'{model_name}_absolute_error.png'))
         plt.close()
         
         # 4.3. Scatter plot dự đoán vs giá thật
@@ -441,7 +445,7 @@ def plot_results(results, mlp_history, rnn_history, y_test, X_train_reshaped, y_
         plt.title(f'Scatter plot: Dự đoán vs Giá thật - {model_name}')
         plt.legend()
         plt.tight_layout()
-        plt.savefig(f'{model_name}_scatter.png')
+        plt.savefig(os.path.join('Scatter_plot', f'{model_name}_scatter.png'))
         plt.close()
     
     # In báo cáo chi tiết
