@@ -35,6 +35,14 @@ def get_stock_data(csv_file):
     df.set_index(date_col, inplace=True)
     return df
 
+def get_macro_data(macro_file):
+    """
+    Đọc dữ liệu vĩ mô từ file CSV (pop.csv)
+    """
+    macro_df = pd.read_csv(macro_file)
+    macro_df['Year'] = macro_df['Year'].astype(int)
+    return macro_df
+
 def prepare_data(df, sequence_length=10):
     """
     Chuẩn bị dữ liệu cho mô hình với các đặc trưng mới
@@ -62,11 +70,16 @@ def prepare_data(df, sequence_length=10):
     # Xóa các dòng có giá trị NaN
     df = df.dropna()
     
-    # Chuẩn hóa dữ liệu
-    scaler = MinMaxScaler()
+    # Danh sách đặc trưng gốc
     features = ['Open', 'High', 'Low', 'Close', 'Volume', 'Returns', 
                 'MA5', 'MA20', 'MA50', 'Volume_Change', 'RSI', 'MACD', 
                 'Bollinger_Bands']
+    # Thêm các cột vĩ mô (chỉ lấy GDPinUSD và GDP growth % nếu có)
+    macro_features = [col for col in ['GDPinUSD', 'GDP growth %'] if col in df.columns]
+    features += macro_features
+    
+    # Chuẩn hóa dữ liệu
+    scaler = MinMaxScaler()
     df[features] = scaler.fit_transform(df[features])
     
     # Tạo sequences cho RNN
@@ -444,6 +457,21 @@ def main():
     # Đọc dữ liệu từ file CSV
     csv_file = 'VNM.csv'
     df = get_stock_data(csv_file)
+    # Đọc dữ liệu vĩ mô
+    macro_file = 'pop.csv'
+    macro_df = get_macro_data(macro_file)
+    # Thêm cột Year vào df cổ phiếu để join
+    df['Year'] = df.index.year
+    # Lưu lại cột ngày để set lại index sau merge
+    date_col = df.index.name if df.index.name is not None else 'time'
+    df[date_col] = df.index
+    # Merge theo Year
+    df = df.merge(macro_df[['Year', 'GDPinUSD', 'GDP growth %']], on='Year', how='left')
+    # Đặt lại index là DatetimeIndex từ cột ngày
+    df[date_col] = pd.to_datetime(df[date_col])
+    df.set_index(date_col, inplace=True)
+    # Nếu có giá trị NaN (do ngày nghỉ, v.v.), dùng forward fill
+    df.fillna(method='ffill', inplace=True)
     # Kiểm tra dữ liệu
     if df is None or df.empty:
         print(f"Không đọc được dữ liệu từ file {csv_file}. Hãy kiểm tra lại file!")
