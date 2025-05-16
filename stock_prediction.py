@@ -7,10 +7,10 @@ from sklearn.model_selection import train_test_split, GridSearchCV, learning_cur
 from sklearn.metrics import mean_squared_error, r2_score
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, LSTM, GRU, Dropout, BatchNormalization
+from tensorflow.keras.layers import Dense, LSTM, GRU, Dropout, BatchNormalization, Input
 from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.regularizers import l1_l2
-from sklearn.linear_model import Ridge, Lasso
+from sklearn.linear_model import Ridge, Lasso, LinearRegression
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.neighbors import KNeighborsRegressor
 
@@ -102,8 +102,8 @@ def create_mlp_model(input_shape):
     Tạo mô hình MLP cải tiến
     """
     model = Sequential([
+        Input(shape=input_shape),
         Dense(128, activation='relu', 
-              input_shape=input_shape,
               kernel_regularizer=l1_l2(l1=0.01, l2=0.01)),
         BatchNormalization(),
         Dropout(0.3),
@@ -125,7 +125,8 @@ def create_rnn_model(input_shape):
     Tạo mô hình RNN cải tiến: Kết hợp LSTM và GRU, tăng số units, thêm BatchNormalization, giảm learning rate, điều chỉnh Dropout.
     """
     model = Sequential([
-        LSTM(128, return_sequences=True, input_shape=input_shape, kernel_regularizer=l1_l2(l1=0.005, l2=0.005)),
+        Input(shape=input_shape),
+        LSTM(128, return_sequences=True, kernel_regularizer=l1_l2(l1=0.005, l2=0.005)),
         BatchNormalization(),
         Dropout(0.4),
         GRU(64, return_sequences=True, kernel_regularizer=l1_l2(l1=0.005, l2=0.005)),
@@ -195,7 +196,7 @@ def train_and_evaluate_models(X_train, X_test, y_train, y_test):
     
     # Lasso với GridSearch
     lasso_params = {'alpha': [0.001, 0.01, 0.1, 1.0]}
-    lasso_model = Lasso()
+    lasso_model = Lasso(max_iter=10000)
     lasso_grid = GridSearchCV(lasso_model, lasso_params, cv=5, scoring='neg_mean_squared_error')
     lasso_grid.fit(X_train_reshaped, y_train)
     lasso_model = lasso_grid.best_estimator_
@@ -214,6 +215,10 @@ def train_and_evaluate_models(X_train, X_test, y_train, y_test):
     knn_grid.fit(X_train_reshaped, y_train)
     knn_model = knn_grid.best_estimator_
     
+    # Linear Regression
+    lr_model = LinearRegression()
+    lr_model.fit(X_train_reshaped, y_train)
+    
     # Đánh giá các mô hình
     models = {
         'MLP': (mlp_model, X_test, X_train),
@@ -221,7 +226,8 @@ def train_and_evaluate_models(X_train, X_test, y_train, y_test):
         'Decision Tree': (dt_model, X_test_reshaped, X_train_reshaped),
         'Lasso': (lasso_model, X_test_reshaped, X_train_reshaped),
         'Ridge': (ridge_model, X_test_reshaped, X_train_reshaped),
-        'kNN': (knn_model, X_test_reshaped, X_train_reshaped)
+        'kNN': (knn_model, X_test_reshaped, X_train_reshaped),
+        'Linear Regression': (lr_model, X_test_reshaped, X_train_reshaped)
     }
     
     # In thông tin về tham số tối ưu của Decision Tree
@@ -259,9 +265,9 @@ def train_and_evaluate_models(X_train, X_test, y_train, y_test):
             'y_pred_train': y_pred_train
         }
     
-    return results, mlp_history, rnn_history, X_train_reshaped, y_train
+    return results, mlp_history, rnn_history, X_train_reshaped, y_train, dt_model, lasso_model, ridge_model, knn_model, lr_model
 
-def plot_results(results, mlp_history, rnn_history, y_test, X_train_reshaped, y_train):
+def plot_results(results, mlp_history, rnn_history, y_test, X_train_reshaped, y_train, trained_models=None):
     """
     Vẽ đồ thị kết quả chi tiết
     """
@@ -344,20 +350,14 @@ def plot_results(results, mlp_history, rnn_history, y_test, X_train_reshaped, y_
     plt.close()
 
     # 3.1. Vẽ learning curve cho các thuật toán truyền thống
-    traditional_models = ['Decision Tree', 'Lasso', 'Ridge', 'kNN']
+    traditional_models = ['Decision Tree', 'Lasso', 'Ridge', 'kNN', 'Linear Regression']
     for model_name in traditional_models:
         if model_name not in results:
             continue
-        # Lấy lại mô hình với tham số tối ưu nếu có
+        # Sử dụng lại mô hình đã huấn luyện nếu truyền vào
         model = None
-        if model_name == 'Decision Tree':
-            model = DecisionTreeRegressor()
-        elif model_name == 'Lasso':
-            model = Lasso()
-        elif model_name == 'Ridge':
-            model = Ridge()
-        elif model_name == 'kNN':
-            model = KNeighborsRegressor()
+        if trained_models and model_name in trained_models:
+            model = trained_models[model_name]
         if model is None:
             continue
         train_sizes, train_scores, test_scores = learning_curve(
@@ -410,6 +410,36 @@ def plot_results(results, mlp_history, rnn_history, y_test, X_train_reshaped, y_
             print("Cảnh báo: Có dấu hiệu overfitting!")
         print("-" * 30)
 
+    # Kết luận tổng quan về mô hình tốt nhất
+    # Tiêu chí: MSE Test thấp nhất và R2 Test cao nhất
+    best_mse_model = min(results.items(), key=lambda x: x[1]['MSE_test'])[0]
+    best_r2_model = max(results.items(), key=lambda x: x[1]['R2_test'])[0]
+    print("\nKẾT LUẬN TỔNG QUAN:")
+    print("=" * 50)
+    print(f"Mô hình có MSE Test thấp nhất: {best_mse_model} (MSE Test = {results[best_mse_model]['MSE_test']:.6f})")
+    print(f"Mô hình có R² Test cao nhất: {best_r2_model} (R² Test = {results[best_r2_model]['R2_test']:.6f})")
+    if best_mse_model == best_r2_model:
+        print(f"=> {best_mse_model} là mô hình tổng thể tốt nhất trên tập kiểm tra!")
+    else:
+        print(f"=> {best_mse_model} tối ưu về MSE, {best_r2_model} tối ưu về R². Hãy cân nhắc mục tiêu sử dụng để chọn mô hình phù hợp.")
+    print("=" * 50)
+
+    # Bảng xếp hạng các thuật toán
+    print("\nBẢNG XẾP HẠNG CÁC THUẬT TOÁN:")
+    print("-" * 50)
+    # Ranking theo MSE Test (tăng dần)
+    print("Xếp hạng theo MSE Test (từ thấp đến cao):")
+    mse_sorted = sorted(results.items(), key=lambda x: x[1]['MSE_test'])
+    for idx, (model, metrics) in enumerate(mse_sorted, 1):
+        print(f"{idx}. {model}: MSE Test = {metrics['MSE_test']:.6f}")
+    print()
+    # Ranking theo R² Test (giảm dần)
+    print("Xếp hạng theo R² Test (từ cao đến thấp):")
+    r2_sorted = sorted(results.items(), key=lambda x: x[1]['R2_test'], reverse=True)
+    for idx, (model, metrics) in enumerate(r2_sorted, 1):
+        print(f"{idx}. {model}: R² Test = {metrics['R2_test']:.6f}")
+    print("-" * 50)
+
 def main():
     # Đọc dữ liệu từ file CSV
     csv_file = 'VNM.csv'
@@ -426,9 +456,11 @@ def main():
     # Chia dữ liệu
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     # Huấn luyện và đánh giá mô hình
-    results, mlp_history, rnn_history, X_train_reshaped, y_train = train_and_evaluate_models(X_train, X_test, y_train, y_test)
+    results, mlp_history, rnn_history, X_train_reshaped, y_train, dt_model, lasso_model, ridge_model, knn_model, lr_model = train_and_evaluate_models(X_train, X_test, y_train, y_test)
+    # Lấy lại các mô hình đã huấn luyện để truyền vào plot_results
+    trained_models = {'Decision Tree': dt_model, 'Lasso': lasso_model, 'Ridge': ridge_model, 'kNN': knn_model, 'Linear Regression': lr_model}
     # Vẽ đồ thị và in kết quả
-    plot_results(results, mlp_history, rnn_history, y_test, X_train_reshaped, y_train)
+    plot_results(results, mlp_history, rnn_history, y_test, X_train_reshaped, y_train, trained_models)
 
 if __name__ == "__main__":
     main()
